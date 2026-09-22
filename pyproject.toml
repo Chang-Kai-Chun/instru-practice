@@ -1,0 +1,21 @@
+[project]
+name = "instru-practice"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Gino", email = "7114065027@smail.nchu.edu.tw" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "ipykernel>=7.3.0",
+    "nidaqmx>=1.6.0",
+    "pandas>=3.0.6",
+]
+
+[project.scripts]
+instru-practice = "instru_practice:main"
+
+[build-system]
+requires = ["uv_build>=0.12.17,<0.13.0"]
+build-backend = "uv_build"
