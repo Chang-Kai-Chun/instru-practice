@@ -12,5 +12,4 @@ def get_next_filename(prefix="test", ext="csv"):
     print(f"已存在檔案 {filename}，將嘗試下一個檔名...")
 
 
-filename = get_next_filename(prefix="test")
-print(filename)
+get_next_filename(prefix="test")

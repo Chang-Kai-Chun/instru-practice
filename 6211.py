@@ -12,6 +12,13 @@ SAMPLE_INTERVAL = 0.3  # 每個取樣點間隔 300 ms
 SAMPLE_RATE = 1 / SAMPLE_INTERVAL  # ≈ 3.33 Hz
 DURATION = 12  # 每次量測總長度 (秒)
 
+DELAY_BEFORE_TRIGGER = 1  # 開始後延遲幾秒才發送 TTL trigger (秒)
+TRIGGER_LINE = "port1/line1"  # 對應 PFI  / P1.1 (Out)，接腳編號 7，D GND 在接腳 5 或 11
+TRIGGER_HOLD_TIME = 5  # TTL 高電位要維持多久 (秒)
+
+AO_TEST_VOLTAGE = 2.0  # AO1 測試輸出電壓 (V)
+AO_TEST_HOLD_TIME = 10  # AO1 測試電壓要維持多久 (秒)
+
 
 def check_device_connected():
     """確認是否有 NI-DAQmx 裝置連接，回傳 True/False"""
@@ -79,20 +86,61 @@ def pd_measurement():
     save_to_csv(data, filename)
 
 
+def send_ttl_trigger():
+    """3. 延遲 DELAY_BEFORE_TRIGGER 秒後，從 P1.0 (PFI4) 輸出一個 TTL 高電位脈衝"""
+    with nidaqmx.Task() as task:
+        task.do_channels.add_do_chan(f"{DEVICE_NAME}/{TRIGGER_LINE}")
+        # do_channels 是專門給輸出通道使用的，如果設定給輸入通道就會報錯。
+        task.write(False)  # 先確保初始狀態是低電位
+
+        print(f"等待 {DELAY_BEFORE_TRIGGER} 秒後發送 TTL trigger...")
+        time.sleep(DELAY_BEFORE_TRIGGER)
+
+        task.write(True)  # 拉高，輸出 TTL High
+        print("TTL trigger 已發送 (High)")
+
+        time.sleep(TRIGGER_HOLD_TIME)
+        task.write(False)  # 拉回 Low
+        print("訊號已拉回 Low")
+
+
+def send_ao_test_signal():
+    """4. 診斷用：延遲 DELAY_BEFORE_TRIGGER 秒後，從 AO1 輸出 AO_TEST_VOLTAGE，維持 AO_TEST_HOLD_TIME 秒"""
+    with nidaqmx.Task() as task:
+        task.ao_channels.add_ao_voltage_chan(f"{DEVICE_NAME}/ao1")
+        task.write(0.0)  # 先確保初始狀態是 0V
+
+        print(f"等待 {DELAY_BEFORE_TRIGGER} 秒後輸出 {AO_TEST_VOLTAGE}V...")
+        time.sleep(DELAY_BEFORE_TRIGGER)
+
+        task.write(AO_TEST_VOLTAGE)
+        print(f"已輸出 {AO_TEST_VOLTAGE}V")
+
+        time.sleep(AO_TEST_HOLD_TIME)
+        task.write(0.0)  # 拉回 0V
+        print("電壓已拉回 0V")
+
+
 def main():
     if check_device_connected():
         # 如果check_device_connected()回傳True，代表有連接儀器，才會進入這個區塊
         print("儀器連接成功，準備開始量測...")
-        time.sleep(2)
+        time.sleep(1)
 
-        choice = input("請選擇量測種類 (1: kitty 訊號讀取, 2: pd 讀取): ")
+        choice = input(
+            "請選擇量測種類 (1: kitty 訊號讀取, 2: pd 讀取, 3: 發送 TTL trigger, 4: AO1 測試訊號): "
+        )
         # choice 只
         if choice == "1":
             kitty_measurement()
         elif choice == "2":
             pd_measurement()
+        elif choice == "3":
+            send_ttl_trigger()
+        elif choice == "4":
+            send_ao_test_signal()
         else:
-            print("無效的選項，請輸入 1 或 2。")
+            print("無效的選項，請輸入 1、2、3 或 4。")
     else:
         print("未偵測到儀器連接，請檢查連線後再試一次。")
 
