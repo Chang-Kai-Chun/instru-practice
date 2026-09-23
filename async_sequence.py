@@ -22,6 +22,8 @@ import time
 
 import nidaqmx
 
+from async_led import LED_DURATION
+
 
 DEVICE_NAME = "Dev1"
 
@@ -29,8 +31,8 @@ SAMPLE_INTERVAL = 1  # 單位：秒，每個取樣點間隔 300 ms，跟 6211.py
 SAMPLE_RATE = 1 / SAMPLE_INTERVAL  # ≈ 3.33 Hz
 
 AO1_TRIGGER_VOLTAGE = 2.0
-TRIGGER_LINE = "port0/line3"  # P0.0，數位輸入，手冊上確認過方向是 In
-POLL_INTERVAL = 0.1  # 每 0.1 秒讀一次 P0.0，判斷有沒有收到 Trigger
+TRIGGER_LINE = "port0/line3"  # PFI3，數位輸入，手冊上確認過方向是 In
+POLL_INTERVAL = 0.1  # 每 0.1 秒讀一次 PFI3，判斷有沒有收到 Trigger
 
 AI9_CHANNEL = "ai9"
 AI9_DURATION = 5  # 秒，收到 Trigger 後要錄多久
@@ -159,8 +161,9 @@ async def record_ai9_after_trigger():
 
 
 async def emit_ao2_and_record_ai2():
-    """AO0 輸出 3V 同時開始錄製 AI10 兩者同步開始"""
-    print(f"AO0 輸出 {AO0_VOLTAGE}V 同時開始錄製 AI10（{AI10_DURATION} 秒）...")
+    """AO0 輸出 1.8V 給LED，同時開始錄製 AI10 兩者同步開始"""
+    print(f"AO0 輸出 {AO0_VOLTAGE}V 持續（{LED_DURATION} 秒）...")
+    # duration是LED_DURATION秒，這個函式會卡住直到錄製結束
 
     # asyncio.gather 會把這兩個 coroutine 同時丟進事件迴圈，
     # 「幾乎同時」開始執行，藉此達到使用者要求的『同步開始』。
