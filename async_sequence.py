@@ -22,7 +22,7 @@ import time
 
 import nidaqmx
 
-from async_led import LED_DURATION
+from scripts.led_control import LED_DURATION
 
 
 DEVICE_NAME = "Dev1"

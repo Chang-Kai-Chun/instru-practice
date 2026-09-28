@@ -12,6 +12,7 @@ dependencies = [
     "ipykernel>=7.3.0",
     "nidaqmx>=1.6.0",
     "pandas>=3.0.6",
+    "pyserial>=3.5",
     "uvicorn[standard]>=0.53.0",
 ]
 
