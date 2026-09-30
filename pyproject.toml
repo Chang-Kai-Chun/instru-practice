@@ -1,5 +1,5 @@
 [project]
-name = "instru-practice"
+name = "instru_package"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
@@ -13,11 +13,12 @@ dependencies = [
     "nidaqmx>=1.6.0",
     "pandas>=3.0.6",
     "pyserial>=3.5",
+    "pyvisa>=1.16.2",
     "uvicorn[standard]>=0.53.0",
 ]
 
 [project.scripts]
-instru-practice = "instru_practice:main"
+instru_package = "instru_practice:main"
 
 [build-system]
 requires = ["uv_build>=0.12.17,<0.13.0"]
