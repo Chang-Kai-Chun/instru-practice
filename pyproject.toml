@@ -18,7 +18,7 @@ dependencies = [
 ]
 
 [project.scripts]
-instru_package = "instru_practice:main"
+instru_package = "instru_package:main"
 
 [build-system]
 requires = ["uv_build>=0.12.17,<0.13.0"]
