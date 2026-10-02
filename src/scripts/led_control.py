@@ -18,14 +18,14 @@ import asyncio
 import nidaqmx
 
 from instru_package import (
-    config,
     file_create,
+    only_led_shining_config,
     reset_voltage,
     signal_read,
     voltage_control,
 )
 
-dev_name = config.device_name
+dev_name = only_led_shining_config.device_name
 
 AO1_TRIGGER_VOLTAGE = 2.0
 TRIGGER_LINE = "port0/line3"  # PFI3，數位輸入，手冊上確認過方向是 In

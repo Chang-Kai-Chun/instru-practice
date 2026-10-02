@@ -1,8 +1,8 @@
 import nidaqmx
-from instru_package import config
+from instru_package import only_led_shining_config
 
 
-def analog_output(channel, voltage, dev_name=config.device_name):
+def analog_output(channel, voltage, dev_name=only_led_shining_config.device_name):
     """控制 AO 通道電壓"""
     with nidaqmx.Task() as task:
         # with 是一個單次task，完成就關閉

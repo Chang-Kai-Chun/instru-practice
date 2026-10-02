@@ -1,8 +1,8 @@
-from instru_package import config
+from instru_package import only_led_shining_config
 import nidaqmx
 
-sample_rate = config.sample_rate
-dev_name = config.device_name
+sample_rate = only_led_shining_config.sample_rate
+dev_name = only_led_shining_config.device_name
 
 
 def _read_ai_channel_data(channel, duration, sample_rate=sample_rate):

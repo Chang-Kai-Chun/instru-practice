@@ -1,8 +1,8 @@
 import nidaqmx
-from instru_package import config
+from instru_package import only_led_shining_config
 
 
-def _reset_all_outputs(channels, dev_name=config.device_name):
+def _reset_all_outputs(channels, dev_name=only_led_shining_config.device_name):
     """把 AO_CHANNELS_TO_RESET 裡列出的每個 OUTPUT 通道都設定 0V。
     用 try/except 包住每一個通道，是因為就算某個通道重置失敗
     （例如裝置已經被拔掉），也不該讓其他通道的重置跟著中斷。
