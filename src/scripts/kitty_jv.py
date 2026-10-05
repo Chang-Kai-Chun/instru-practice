@@ -1,5 +1,5 @@
 """
-Keithey 單獨做JV Curve，不會透過6211 trigger，直接透過電腦給指令，因此不需要kitty在ARM狀態
+Keithley 單獨做JV Curve，不會透過6211 trigger，直接透過電腦給指令，因此不需要kitty在ARM狀態
 """
 
 import pyvisa
@@ -11,13 +11,27 @@ from instru_package.jv_pv_project import (
 )
 
 
-def run_jv_sweep_standalone():
+def run_jv_sweep_standalone(
+    START_V: float = jv_pv_config.START_V,
+    STOP_V: float = jv_pv_config.STOP_V,
+    STEP_V: float = jv_pv_config.STEP_V,
+    COMPLIANCE_A: float = jv_pv_config.COMPLIANCE_A,
+    SOURCE_DELAY: float = jv_pv_config.SOURCE_DELAY,
+):
     """單獨執行一次 JV 掃描，不等待任何外部觸發，呼叫後立刻開始"""
     rm = pyvisa.ResourceManager()
     kitty = rm.open_resource(jv_pv_config.KITTY_RESOURCE)
     kitty.timeout = jv_pv_config.KITTY_TIMEOUT_MS
 
-    keithley_setting.configure_kitty(kitty, arm_source="IMM")
+    keithley_setting.configure_kitty(
+        kitty,
+        START_V=START_V,
+        STOP_V=STOP_V,
+        STEP_V=STEP_V,
+        COMPLIANCE_A=COMPLIANCE_A,
+        SOURCE_DELAY=SOURCE_DELAY,
+        arm_source="IMM",
+    )
 
     try:
         raw = kitty.query(":READ?")

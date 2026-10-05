@@ -5,23 +5,29 @@
 from instru_package.jv_pv_project import jv_pv_config
 
 
-def configure_kitty(kitty, arm_source="IMM"):  # arm_source = "IMM" or "NST"
+def configure_kitty(
+    kitty,
+    arm_source="IMM",
+    START_V=jv_pv_config.START_V,
+    STOP_V=jv_pv_config.STOP_V,
+    STEP_V=jv_pv_config.STEP_V,
+    COMPLIANCE_A=jv_pv_config.COMPLIANCE_A,
+    SOURCE_DELAY=jv_pv_config.SOURCE_DELAY,
+):  # arm_source = "IMM" or "NST"
     kitty.write("*RST")  # 設定為初始狀態
     kitty.write("*CLS")  # 清空錯誤佇列，確保之後查到的都是這次執行產生的
     kitty.write(":SENS:FUNC:CONC OFF")
     kitty.write(":SOUR:FUNC VOLT")  # 設定輸出為"電壓"
     kitty.write(":SENS:FUNC 'CURR:DC'")  # 設定為"直流電"
-    kitty.write(
-        f":SENS:CURR:PROT {jv_pv_config.COMPLIANCE_A}"
-    )  # 是設定電流Compliance為1mA
+    kitty.write(f":SENS:CURR:PROT {COMPLIANCE_A}")  # 是設定電流Compliance為1mA
 
-    kitty.write(f":SOUR:VOLT:START {jv_pv_config.START_V}")
-    kitty.write(f":SOUR:VOLT:STOP {jv_pv_config.STOP_V}")
-    kitty.write(f":SOUR:VOLT:STEP {jv_pv_config.STEP_V}")
+    kitty.write(f":SOUR:VOLT:START {START_V}")
+    kitty.write(f":SOUR:VOLT:STOP {STOP_V}")
+    kitty.write(f":SOUR:VOLT:STEP {STEP_V}")
     kitty.write(":SOUR:VOLT:MODE SWE")
     kitty.write(":SOUR:SWE:RANG AUTO")
     kitty.write(":SOUR:SWE:SPAC LIN")
-    kitty.write(f":SOUR:DEL {jv_pv_config.SOURCE_DELAY}")
+    kitty.write(f":SOUR:DEL {SOURCE_DELAY}")
 
     points = int(kitty.query(":SOUR:SWE:POIN?"))
     kitty.write(f":TRIG:COUN {points}")
