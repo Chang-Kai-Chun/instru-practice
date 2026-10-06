@@ -9,8 +9,8 @@ def configure_kitty(
     kitty,
     arm_source="IMM",
     START_V=jv_pv_config.START_V,
-    STOP_V=jv_pv_config.STOP_V,
     STEP_V=jv_pv_config.STEP_V,
+    STOP_V=jv_pv_config.STOP_V,
     COMPLIANCE_A=jv_pv_config.COMPLIANCE_A,
     SOURCE_DELAY=jv_pv_config.SOURCE_DELAY,
 ):  # arm_source = "IMM" or "NST"

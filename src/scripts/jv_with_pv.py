@@ -178,8 +178,9 @@ async def main(START_V, STOP_V, STEP_V, COMPLIANCE_A, SOURCE_DELAY, SAMPLE_RATE)
     jv_filename, jv_points = pv_and_jv_file_saving.save_jv_csv(raw)
     print(f"JV 資料已存至 {jv_filename}，共 {jv_points} 筆")
     print(f"kitty 錯誤查詢: {kitty_error}")
-
     await asyncio.to_thread(reset_voltage._reset_all_outputs, ["ao0", "ao1"])
+    return pv_filename, jv_filename
+    # 這裡要檔案名稱回傳，這樣RX才可以透過FastAPI抓到檔案內容
 
 
 if __name__ == "__main__":

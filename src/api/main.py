@@ -1,10 +1,73 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from scripts import pico_control, led_control, daq_pv, kitty_jv, jv_with_pv
 from instru_package.jv_pv_project import pv_and_jv_file_saving, jv_pv_config
-import asyncio
+import asyncio, csv
 
 app = FastAPI()
 # app 是一個 FastAPI 的實例物件
+
+
+# ---------------------------建立與rx的連接---------------------------
+class ConnectionManager:
+    def __init__(self):
+        self.active: list[WebSocket] = []
+        # 連線清單，讓rx可以知道目前有多少人連線，並且可以把訊息傳給所有人
+
+    async def connect(self, websocket: WebSocket):
+        # 說明websocket是WebSocket型別，就像0.005是float
+        await websocket.accept()
+        self.active.append(websocket)
+        # 新的連線接入FastAPI，Accept後把他append到list中，這樣rx就知道有新的連線了
+
+    def disconnect(self, websocket: WebSocket):
+        self.active.remove(websocket)
+        # 有連線斷開，從list刪掉
+
+    async def broadcast(self, message: dict):
+        for websocket in self.active:
+            await websocket.send_json(message)
+
+
+manager = ConnectionManager()
+# 建立實體物件，物件內容是ConnectionManager()
+
+
+@app.websocket("/ws/status")
+# FastAPI與RX溝通的橋樑，當一個RX連線進來，FastAPI就會有一條ws/status
+# 這條連線街上後
+async def ws_status(websocket: WebSocket):
+    await manager.connect(websocket)
+    try:
+        while True:
+            await websocket.receive_text()
+            # 持續跑迴圈，目的是讓迴圈持續進行
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
+        # 若前端中斷連線，就會觸發WebSocketDisconnect，然後把該連線從list中刪掉
+
+
+# -------------------------------------------------------------------
+
+
+# ---------------------------建立讓rx可以抓取數據---------------------
+
+
+@app.get("/results/{filename}")
+def get_result(filename: str):
+    if "/" in filename or "\\" in filename or ".." in filename:
+        return {"error": "invalid filename"}
+        # 若檔案名稱含有上述路逕字元就報錯
+    try:
+        with open(filename, newline="") as f:
+            reader = csv.DictReader(f)
+            rows = [{k: float(v) for k, v in row.items()} for row in reader]
+        return {"filename": filename, "rows": rows}
+    except FileNotFoundError:
+        return {"error": "file not found"}
+
+
+# -------------------------------------------------------------------
+
 
 daq_lock = asyncio.Lock()
 # 設定好daq_lock是asyncio.Lock()
@@ -82,6 +145,11 @@ async def start_jv_task(
             filename, points = pv_and_jv_file_saving.save_jv_csv(raw)
             print(f"kitty 錯誤查詢: {error}")
             print(f"JV 資料已存至 {filename}，共 {points} 筆")
+            # 這步只讓FastAPI可以print出量測完成的資訊與數據有幾筆
+            await manager.broadcast(
+                {"event": "done", "kind": "jv", "filename": filename}
+            )
+            # 透過這行把訊息傳給前端，告訴前端量測完成，並且附上檔案名稱
 
     asyncio.create_task(_run())
     return {"status": "started"}
@@ -106,6 +174,11 @@ async def start_pv_task(
             # 使用關鍵引數，才不會因為排序而出問題
             filename = pv_and_jv_file_saving.save_pv_csv(data)
             print(f"PV 資料已存至 {filename}，共 {len(data)} 筆")
+            # 這步只讓FastAPI可以print出量測完成的資訊與數據有幾筆
+            await manager.broadcast(
+                {"event": "done", "kind": "pv", "filename": filename}
+            )
+            # 透過這行把訊息傳給前端，告訴前端量測完成，並且附上檔案名稱
 
     asyncio.create_task(_run())
     return {"status": "started"}
@@ -130,13 +203,22 @@ async def start_jv_pv_sync_task(
     async def _run():
         async with daq_lock:  # 執行daq鎖
             async with kitty_lock:  # 執行kitty鎖
-                await jv_with_pv.main(
+                pv_filename, jv_filename = await jv_with_pv.main(
+                    # pv & jv 的檔案名稱會透過jv_with_pv.main()回傳
                     START_V,
                     STOP_V,
                     STEP_V,
                     COMPLIANCE_A,
                     SOURCE_DELAY,
                     SAMPLE_RATE,
+                )
+                await manager.broadcast(
+                    {
+                        "event": "done",
+                        "kind": "jv_pv_sync",
+                        "pv_filename": pv_filename,
+                        "jv_filename": jv_filename,
+                    }
                 )
                 # 會把上方使用者輸入到FastAPI的參數傳入jv_with_pv.py檔案中
 
