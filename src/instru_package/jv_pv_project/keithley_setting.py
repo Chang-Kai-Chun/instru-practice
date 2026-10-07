@@ -5,7 +5,7 @@
 from instru_package.jv_pv_project import jv_pv_config
 
 
-def configure_kitty(
+def configure_kitty_for_polling(
     kitty,
     arm_source="IMM",
     START_V=jv_pv_config.START_V,
@@ -30,7 +30,15 @@ def configure_kitty(
     kitty.write(f":SOUR:DEL {SOURCE_DELAY}")
 
     points = int(kitty.query(":SOUR:SWE:POIN?"))
+    # :SOUR:SWE:POIN? 會回傳掃描點數，這個點數是由 START_V、STOP_V、STEP_V 計算出來的
     kitty.write(f":TRIG:COUN {points}")
+
+    kitty.write(
+        ":TRAC:CLE"
+    )  # 清空舊的 buffer 資料，第一次執行BUFFER沒資料，但後續會跑迴圈，必須寫
+    kitty.write(f":TRAC:POIN {points}")  # buffer 大小設成跟掃描點數一樣
+    kitty.write(":TRAC:FEED SENS")  # buffer 存的是量測結果（電壓/電流）
+    kitty.write(":TRAC:FEED:CONT NEXT")  # 開始把資料存進 buffer
 
     kitty.write(f":ARM:SOUR {arm_source}")
     # arm_source = IMM：Arm 層不等任何訊號，立刻視為滿足條件
@@ -38,7 +46,10 @@ def configure_kitty(
     kitty.write(":FORM:ELEM VOLT,CURR,TIME")
 
     kitty.write(":OUTP ON")
-    # 注意：:OUTP ON 只是打開輸出電路，不代表 kitty 已經在等待觸發，
-    # 真正進入 Arm／等待狀態，要等呼叫端送出 :READ?（或舊版的 :INIT）才開始
+    kitty.write(":INIT")  # 啟動掃描，立刻返回，不等待掃描結束
+    return points  # 把總點數回傳
 
-    return points
+
+def poll_point_count(kitty):
+    """查詢 buffer 目前已經收集到幾筆，不會阻塞"""
+    return int(kitty.query(":TRAC:POIN:ACT?"))

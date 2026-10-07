@@ -26,11 +26,11 @@ def save_pv_csv(
     return filename
 
 
-def save_jv_csv(raw):
-    """把 :READ? 回傳的原始字串（電壓,電流,時間 重複排列）存成 CSV"""
-    values = [float(x) for x in raw.strip().split(",")]
-    rows = [values[i : i + 3] for i in range(0, len(values), 3)]
-    filename = file_create.get_next_filename(prefix="jv_sweep")
+def save_jv_csv_from_rows(rows):
+    """
+    把已經解析好的 [V, I, T] rows 直接存成 CSV（輪詢模式用，不用再解析原始字串）
+    """
+    filename = file_create.get_next_filename(prefix="Keithley_JV_sweep")
     with open(filename, "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(["Voltage (V)", "Current (A)", "Timestamp (s)"])

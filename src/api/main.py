@@ -26,6 +26,7 @@ class ConnectionManager:
     async def broadcast(self, message: dict):
         for websocket in self.active:
             await websocket.send_json(message)
+            # 把訊息傳入rx
 
 
 manager = ConnectionManager()
@@ -119,6 +120,8 @@ async def start_pico_task():
 # Below is about PV measurement and JV measurement
 # ---------------------------
 
+POLL_INTERVAL_SECONDS = 0.3  # 每隔多少時間查看一次BUFFER
+
 
 # Keithley 單獨做JV Curve，不會透過6211 trigger，直接透過電腦給指令，因此不需要kitty在ARM狀態
 @app.post("/tasks/jv")
@@ -134,22 +137,36 @@ async def start_jv_task(
 
     async def _run():
         async with kitty_lock:
-            raw, error = await asyncio.to_thread(
-                kitty_jv.run_jv_sweep_standalone,
+            kitty, points = await asyncio.to_thread(
+                kitty_jv.arm_kitty_polling,
                 START_V,
                 STOP_V,
                 STEP_V,
                 COMPLIANCE_A,
                 SOURCE_DELAY,
             )
-            filename, points = pv_and_jv_file_saving.save_jv_csv(raw)
+            all_rows = []
+            while len(all_rows) < points:
+                await asyncio.sleep(POLL_INTERVAL_SECONDS)
+                new_rows = await asyncio.to_thread(
+                    kitty_jv.poll_kitty_rows,
+                    kitty,
+                    len(all_rows),
+                    # 這裡kitty、len(all_rows)分別對應keithley_setting.poll_kitty_rows(kitty, already_sent)
+                )
+                if new_rows:  # 有東西的話就會回傳true，沒有東西就會回傳false
+                    all_rows.extend(new_rows)  # 把new_low新增到all_rows裡面
+                    await manager.broadcast(
+                        {"event": "partial_data", "kind": "jv", "chunk": new_rows}
+                    )
+
+            error = await asyncio.to_thread(kitty_jv.finish_kitty_sweep, kitty)
+            filename, count = pv_and_jv_file_saving.save_jv_csv_from_rows(all_rows)
             print(f"kitty 錯誤查詢: {error}")
-            print(f"JV 資料已存至 {filename}，共 {points} 筆")
-            # 這步只讓FastAPI可以print出量測完成的資訊與數據有幾筆
+            print(f"JV 資料已存至 {filename}，共 {count} 筆")
             await manager.broadcast(
                 {"event": "done", "kind": "jv", "filename": filename}
             )
-            # 透過這行把訊息傳給前端，告訴前端量測完成，並且附上檔案名稱
 
     asyncio.create_task(_run())
     return {"status": "started"}
@@ -166,19 +183,36 @@ async def start_pv_task(
 
     async def _run():
         async with daq_lock:
-            data = await asyncio.to_thread(
-                daq_pv.record_pv_standalone,
-                duration_seconds=duration_seconds,
-                SAMPLE_RATE=SAMPLE_RATE,
+            total_samples = int(SAMPLE_RATE * duration_seconds)
+            chunk_samples = int(SAMPLE_RATE * daq_pv.CHUNK_SECONDS)
+            # 每次傳送給電腦的數據量，SAMPLE_RATE (個/s) * CHUNK_SECONDS (s/每次)
+
+            ai_task = await asyncio.to_thread(
+                daq_pv.arm_pv_task, SAMPLE_RATE, total_samples
             )
-            # 使用關鍵引數，才不會因為排序而出問題
-            filename = pv_and_jv_file_saving.save_pv_csv(data)
-            print(f"PV 資料已存至 {filename}，共 {len(data)} 筆")
-            # 這步只讓FastAPI可以print出量測完成的資訊與數據有幾筆
+            # 呼叫 daq_pv.arm_pv_task() 函式，並且將 SAMPLE_RATE 與 total_samples 傳入
+            all_data = []  # 目前收到的數據量
+            try:
+                while len(all_data) < total_samples:
+                    remaining = total_samples - len(all_data)
+                    # 算出還剩下多少數據要讀取
+                    this_chunk = min(chunk_samples, remaining)
+                    # 選擇要讀取的數據量，如果remain小於一次chunk要讀的量，則選擇remain
+                    chunk = await asyncio.to_thread(
+                        daq_pv.read_pv_chunk, ai_task, this_chunk
+                    )  # 設定ai_task，把this_chunk傳進去，讓read知道要吃多少資料
+                    all_data.extend(chunk)
+                    await manager.broadcast(
+                        {"event": "partial_data", "kind": "pv", "chunk": chunk}
+                    )  # 設定整個資料形式：本次傳到電腦的數據、量測中的部分數據、量測種類、數據內容(chunk內的數據)
+            finally:
+                ai_task.close()
+
+            filename = pv_and_jv_file_saving.save_pv_csv(all_data)
+            print(f"PV 資料已存至 {filename}，共 {len(all_data)} 筆")
             await manager.broadcast(
                 {"event": "done", "kind": "pv", "filename": filename}
             )
-            # 透過這行把訊息傳給前端，告訴前端量測完成，並且附上檔案名稱
 
     asyncio.create_task(_run())
     return {"status": "started"}

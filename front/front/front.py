@@ -1,7 +1,8 @@
 import reflex as rx
-import httpx
+import httpx, websockets, json
 
 FASTAPI_URL = "http://localhost:8000"
+WS_URL = "ws://localhost:8000/ws/status"
 
 
 def labeled_input(label: str, value, on_change) -> rx.Component:
@@ -29,6 +30,41 @@ class State(rx.State):
     sample_rate: float = 1000.0
     source_delay: float = 0.005
     status: str = "idle"
+
+    pv_chart_data: list[dict] = []  # 先設定空list，內部元素為字典，未來存放我們的數據
+
+    @rx.event(background=True)
+    async def listen_status(self):
+        async with websockets.connect(WS_URL) as ws:
+            # 使用websocket連線到FastAPI，網址如WS_URL
+            async for message in ws:
+                # 設定迴圈，當收到訊息，就把message放入data(json格式)
+                # message 作為迴圈變數，就像是 for i in list...
+                data = json.loads(message)
+
+                if data["event"] == "partial_data" and data["kind"] == "pv":
+                    # 當本次傳送的數據資料等於量測的部分數據
+                    # 同時滿足量測種類是pv，才會進入這個條件
+                    async with self:
+                        start_index = len(self.pv_chart_data)
+                        # 先讀取pv_chart_data內的數據量，第一次是0
+                        # 如果第一次寫入50筆，下一次len(...)就會=50
+                        new_points = [
+                            {
+                                "time_second": (start_index + i) / self.sample_rate,
+                                "voltage": v,
+                            }
+                            for i, v in enumerate(data["chunk"])
+                            # 設定index=start_index+i，這樣就會依序增加，/self.sample_rate，就是把點數變成秒數
+                            # v 就是data["chunk"]內的數據，這裡是電壓值
+                        ]
+                        self.pv_chart_data.extend(new_points)
+                        # 把new_points內的資料依序加入倒pv_chart_data這個字典中
+
+                elif data["event"] == "done" and data.get("kind") == "pv":
+                    # 當本次傳送的數據資料等於done，表示本次量測完成
+                    async with self:
+                        self.status = "done"
 
     @rx.event
     # 裝飾器，在rx，這個是用來讓此函數可以被rx呼叫的裝飾器
@@ -69,6 +105,8 @@ class State(rx.State):
         """
         設定將參數傳送給FastAPI的函數
         this function will be called when the user clicks the "Start Measurement" button in the RX frontend.
+        並且呼叫FastAPI對應的def開始執行量測
+        calling FastAPI's corresponding def to start the measurement.
         """
         self.status = "running"
 
@@ -160,7 +198,21 @@ def index() -> rx.Component:
             ),
             measurement_selection,
             rx.button("開始量測", on_click=State.start_measurement),
+            # on_click 表示當按鈕被點擊時，會呼叫State.start_measurement函數
+            rx.recharts.line_chart(
+                rx.recharts.line(data_key="voltage", stroke="#8884d8"),
+                rx.recharts.x_axis(data_key="time_second", label="Time (s)"),
+                # x軸的資料來源是"index"
+                rx.recharts.y_axis(data_key="voltage", label="Voltage (V)"),
+                # y軸的資料來源是"voltage"
+                data=State.pv_chart_data,
+                width="100%",
+                height=300,
+            ),  # line_chart的結尾
         ),  # 整體網頁的vstack的結尾
+        on_mount=State.listen_status,
+        # 這邊有個關鍵：on_mount是關鍵字引數，需要放在位置引數後放。上方的內容都是位置引數
+        # on_mount 是設定這個container的屬性，當發生改變時，會呼叫State.listen_status函數
     )  # Container的結尾
 
 
