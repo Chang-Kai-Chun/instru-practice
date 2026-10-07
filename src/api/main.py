@@ -148,6 +148,7 @@ async def start_jv_task(
             all_rows = []
             while len(all_rows) < points:
                 await asyncio.sleep(POLL_INTERVAL_SECONDS)
+                # 在每次輪巡的間隔時間
                 new_rows = await asyncio.to_thread(
                     kitty_jv.poll_kitty_rows,
                     kitty,
@@ -234,18 +235,86 @@ async def start_jv_pv_sync_task(
     if daq_lock.locked() or kitty_lock.locked():
         return {"status": "busy", "message": "6211 或 kitty 正在使用中，請稍後再試"}
 
+    # ---------------------------建立Keithley抓數據的函式---------------------
+    async def _collect_kitty_data(kitty, points):
+        """Keithley抓數據的函式，整體邏輯與PV ONLY相同"""
+        all_rows = []
+        while len(all_rows) < points:
+            await asyncio.sleep(POLL_INTERVAL_SECONDS)
+            new_rows = await asyncio.to_thread(
+                kitty_jv.poll_kitty_rows,
+                kitty,
+                len(all_rows),
+                # 　會把all_rows傳入poll_kitty_rows，作為already_sent
+            )
+            if new_rows:
+                all_rows.extend(new_rows)
+                await manager.broadcast(
+                    {"event": "partial_data", "kind": "jv", "chunk": new_rows}
+                )
+        error = await asyncio.to_thread(jv_with_pv.finish_kitty_sync, kitty)
+        filename, count = pv_and_jv_file_saving.save_jv_csv_from_rows(all_rows)
+        print(f"kitty 錯誤查詢: {error}")
+        print(f"JV 資料已存至 {filename}，共 {count} 筆")
+        return filename
+
+    # ---------------------------建立6211 daq 抓數據的函式---------------------
+    async def _collect_daq_data(ai_task, total_samples, sample_rate):
+        """6211抓數據的函式，整體邏輯與PV ONLY相同"""
+        all_data = []
+        chunk_samples = int(sample_rate * daq_pv.CHUNK_SECONDS)
+        try:
+            while len(all_data) < total_samples:
+                remaining = total_samples - len(all_data)
+                this_chunk = min(chunk_samples, remaining)
+                chunk = await asyncio.to_thread(
+                    daq_pv.read_pv_chunk, ai_task, this_chunk
+                )
+                all_data.extend(chunk)
+                await manager.broadcast(
+                    {"event": "partial_data", "kind": "pv", "chunk": chunk}
+                )
+        finally:
+            ai_task.close()
+        filename = pv_and_jv_file_saving.save_pv_csv(
+            all_data, sample_rate=sample_rate, prefix="pv_triggered"
+        )
+        print(f"PV 資料已存至 {filename}（6211 已完成，不等 kitty）")
+        return filename
+
+    # ---------------------------執行的程式碼---------------------
     async def _run():
         async with daq_lock:  # 執行daq鎖
             async with kitty_lock:  # 執行kitty鎖
-                pv_filename, jv_filename = await jv_with_pv.main(
-                    # pv & jv 的檔案名稱會透過jv_with_pv.main()回傳
+                duration_time = jv_with_pv.estimate_duration(
+                    START_V, STOP_V, STEP_V, SOURCE_DELAY
+                )
+                total_samples = int(SAMPLE_RATE * duration_time)
+
+                kitty, points = await asyncio.to_thread(
+                    jv_with_pv.arm_kitty_sync_task,
                     START_V,
                     STOP_V,
                     STEP_V,
                     COMPLIANCE_A,
                     SOURCE_DELAY,
-                    SAMPLE_RATE,
                 )
+                ai_task = await asyncio.to_thread(
+                    jv_with_pv.arm_daq_sync_task, SAMPLE_RATE, total_samples
+                )
+
+                kitty_task = asyncio.create_task(_collect_kitty_data(kitty, points))
+                pv_task = asyncio.create_task(
+                    _collect_daq_data(ai_task, total_samples, SAMPLE_RATE)
+                )
+
+                await asyncio.sleep(0.5)
+                await asyncio.to_thread(jv_with_pv.send_trigger_pulse)
+
+                jv_filename = await kitty_task
+                pv_filename = await pv_task
+                await asyncio.to_thread(jv_with_pv.reset_outputs)
+
                 await manager.broadcast(
                     {
                         "event": "done",
@@ -254,7 +323,6 @@ async def start_jv_pv_sync_task(
                         "jv_filename": jv_filename,
                     }
                 )
-                # 會把上方使用者輸入到FastAPI的參數傳入jv_with_pv.py檔案中
 
     asyncio.create_task(_run())
     return {"status": "started"}

@@ -2,10 +2,7 @@
 觸發 kitty 進行 JV 掃描，同時 6211 錄製 PV 訊號，兩者由同一個觸發脈衝同步啟動。
 """
 
-import time
-import asyncio
-import pyvisa
-import nidaqmx
+import time, asyncio, pyvisa, nidaqmx
 from nidaqmx.constants import AcquisitionType, Edge, TerminalConfiguration
 
 from instru_package import reset_voltage
@@ -14,9 +11,11 @@ from instru_package.jv_pv_project import (
     pv_and_jv_file_saving,
     keithley_setting,
 )
+from scripts import kitty_jv, daq_pv
 
 
 dev_name = jv_pv_config.device_name
+POLL_INTERVAL_SECONDS = 0.3
 
 POINT_OVERHEAD_SECONDS = 0.07  # 每個點除了 SOURCE_DELAY 之外，額外的實測開銷
 SAFETY_MARGIN_SECONDS = 3  # 餘裕秒數
@@ -31,8 +30,8 @@ KITTY_MARKER_LEVEL_V = 3  # 瞬間脈衝的電壓
 KITTY_MARKER_ON_SECONDS = 0.5  # 瞬間脈衝維持的時間
 
 
-# 計算Duration的函式
-def _estimate_duration(start_v, stop_v, step_v, source_delay):
+def estimate_duration(start_v, stop_v, step_v, source_delay):
+    """計算Duration的函式"""
     # 這裡選用小寫是因為參數並非全域設定，只在這個函式使用，設定為小寫
     points = round(abs(stop_v - start_v) / step_v) + 1
     sweep_time = points * (source_delay + POINT_OVERHEAD_SECONDS)
@@ -45,10 +44,8 @@ def _estimate_duration(start_v, stop_v, step_v, source_delay):
     return duration_time
 
 
-def _send_trigger_pulse():
-    """
-    設定 6211 的 trigger
-    """
+def send_trigger_pulse():
+    """設定 6211 的 trigger"""
     with nidaqmx.Task() as task:
         task.do_channels.add_do_chan(f"{dev_name}/{TRIGGER_LINE}")
         task.write(True)  # 先確保是高電位，避免原本就是低電位時寫不出下降緣
@@ -56,12 +53,12 @@ def _send_trigger_pulse():
         task.write(True)
 
 
-def _arm_kitty(start_v, stop_v, step_v, compliance_a, source_delay):
+def arm_kitty_sync_task(start_v, stop_v, step_v, compliance_a, source_delay):
     """設定 kitty 為等待 SOT 觸發的狀態（還沒真的進入等待，見 _wait_kitty_result）"""
     rm = pyvisa.ResourceManager()
     kitty = rm.open_resource(jv_pv_config.KITTY_RESOURCE)
     kitty.timeout = jv_pv_config.KITTY_TIMEOUT_MS
-    keithley_setting.configure_kitty(
+    points = keithley_setting.configure_kitty_for_polling(
         kitty,
         arm_source="NST",
         START_V=start_v,
@@ -72,22 +69,22 @@ def _arm_kitty(start_v, stop_v, step_v, compliance_a, source_delay):
         # 這裡大寫表示的是keithley_setting裡的參數，取代成小寫的
         # 小寫的就是從fastapi中使用者輸入得到的
     )
-    return kitty
+    return kitty, points
 
 
-def _arm_ai_task(sample_rate, total_samples):
+def arm_daq_sync_task(sample_rate, total_samples):
     """設定 6211 AI1 為 start trigger 待命，回傳仍在開啟狀態的 task 物件"""
     ai_task = nidaqmx.Task()
     # 這個函式是其他函式的前置設定，task 要跨函式維持開啟，不能用 with
     ai_task.ai_channels.add_ai_voltage_chan(
         f"{dev_name}/{jv_pv_config.AI_CHANNEL}",
-        terminal_config=TerminalConfiguration.RSE,
+        terminal_config=TerminalConfiguration.RSE,  # 單端參考 接地做參考
         min_val=-1,
         max_val=1,
     )
     ai_task.timing.cfg_samp_clk_timing(
         sample_rate,
-        sample_mode=AcquisitionType.FINITE,
+        sample_mode=AcquisitionType.CONTINUOUS,
         samps_per_chan=total_samples,
     )
     ai_task.triggers.start_trigger.cfg_dig_edge_start_trig(
@@ -98,100 +95,107 @@ def _arm_ai_task(sample_rate, total_samples):
     return ai_task
 
 
-def read_kitty_result(kitty):
+def finish_kitty_sync(kitty):
     """
-    卡住直到 kitty 完成觸發＋掃描，回傳原始資料字串與錯誤查詢結果。
-
-    掃描結束後，額外送出一個瞬間脈衝
+    掃描收集完成後，先送出瞬間標記脈衝（給時間軸比對用），
+    再確認關閉輸出、查詢錯誤、釋放資源。
     """
     try:
-        raw = kitty.query(
-            ":READ?"
-        )  # 設定raw 資料為Keithley 回傳的資料，這行會卡住直到kitty完成掃描
+        kitty.write(":OUTP OFF")
+        time.sleep(KITTY_MARKER_OFF_SECONDS)
+        kitty.write(":SOUR:VOLT:MODE FIXED")
+        kitty.write(f":SOUR:VOLT:LEV {KITTY_MARKER_LEVEL_V}")
+        kitty.write(":OUTP ON")
+        time.sleep(KITTY_MARKER_ON_SECONDS)
+        kitty.write(":OUTP OFF")
         error = kitty.query(":SYST:ERR?")
-
-        kitty.write(":OUTP OFF")  # 先把OUTPUT關閉
-        time.sleep(KITTY_MARKER_OFF_SECONDS)  # 維持N時間
-        kitty.write(":SOUR:VOLT:MODE FIXED")  # 設定給電壓模式為固定電壓
-        kitty.write(f":SOUR:VOLT:LEV {KITTY_MARKER_LEVEL_V}")  # 設定脈衝電壓為N伏特
-        kitty.write(":OUTP ON")  # 設定OUTPUT為ON，送出脈衝
-        time.sleep(KITTY_MARKER_ON_SECONDS)  # 設定瞬間脈衝維持N秒
-        kitty.write(":OUTP OFF")  # 設定OUTPUT為OFF，結束脈衝
-
-        return raw, error  # 將RAW、ERROR資料回傳
-        # RAW 為Keithley 回傳的資料，ERROR 為Keithley 回傳的錯誤訊息
-    finally:  # 無論如何都會執行
-        kitty.write(":OUTP OFF")  # 關閉OUTPUT
-        outp_state = kitty.query(":OUTP?")  # 詢問Keithley OUTPUT狀態
-        print(
-            f"[kitty] 已送出 :OUTP OFF，查詢輸出狀態: {outp_state.strip()}"
-        )  # print出來
-        kitty.close()  # 關閉kitty，釋放資源
+        return error
+    finally:
+        kitty.write(":OUTP OFF")
+        outp_state = kitty.query(":OUTP?")
+        print(f"[kitty] 已送出 :OUTP OFF，查詢輸出狀態: {outp_state.strip()}")
+        kitty.close()
 
 
-def _read_ai_task(ai_task, total_samples, duration_time):
-    """卡住直到 6211 錄滿設定的秒數，回傳資料；不管 kitty 那邊狀況如何"""
-    try:
-        return ai_task.read(
-            number_of_samples_per_channel=total_samples,
-            timeout=duration_time + 10,
+def reset_outputs():
+    """關閉daq 6211的輸出"""
+    reset_voltage._reset_all_outputs(["ao0", "ao1"])
+
+
+async def _collect_kitty(kitty, points):
+    """Keithley抓數據的函式，整體邏輯與JV ONLY相同"""
+    all_rows = []
+    while len(all_rows) < points:
+        await asyncio.sleep(POLL_INTERVAL_SECONDS)
+        new_rows = await asyncio.to_thread(
+            kitty_jv.poll_kitty_rows, kitty, len(all_rows)
         )
+        if new_rows:
+            all_rows.extend(new_rows)
+            print(f"[kitty] 累積 {len(all_rows)}/{points}")
+    error = await asyncio.to_thread(finish_kitty_sync, kitty)
+    filename, count = pv_and_jv_file_saving.save_jv_csv_from_rows(all_rows)
+    print(f"kitty 錯誤查詢: {error}")
+    print(f"JV 資料已存至 {filename}，共 {count} 筆")
+    return filename
+
+
+async def _collect_pv(ai_task, total_samples, sample_rate):
+    """6211抓數據的函式，整體邏輯與PV ONLY相同"""
+    all_data = []
+    chunk_samples = int(sample_rate * daq_pv.CHUNK_SECONDS)
+    try:
+        while len(all_data) < total_samples:
+            remaining = total_samples - len(all_data)
+            this_chunk = min(chunk_samples, remaining)
+            chunk = await asyncio.to_thread(daq_pv.read_pv_chunk, ai_task, this_chunk)
+            all_data.extend(chunk)
+            print(f"[pv] 累積 {len(all_data)}/{total_samples}")
     finally:
         ai_task.close()
+    filename = pv_and_jv_file_saving.save_pv_csv(
+        all_data, sample_rate=sample_rate, prefix="pv_triggered"
+    )
+    print(f"PV 資料已存至 {filename}")
+    return filename
 
 
-async def main(START_V, STOP_V, STEP_V, COMPLIANCE_A, SOURCE_DELAY, SAMPLE_RATE):
-    # 上方的這些參數會透過FastAPI傳進來
-    duration_time = _estimate_duration(START_V, STOP_V, STEP_V, SOURCE_DELAY)
-    # 這裡直接設定duration_time 是透過 _estimate_duration return的值，這個函式會計算出duration_time
+async def run_pv_jv_withoutFASTAPI():
+    START_V = jv_pv_config.START_V
+    STOP_V = jv_pv_config.STOP_V
+    STEP_V = jv_pv_config.STEP_V
+    COMPLIANCE_A = jv_pv_config.COMPLIANCE_A
+    SOURCE_DELAY = jv_pv_config.SOURCE_DELAY
+    SAMPLE_RATE = jv_pv_config.SAMPLE_RATE
+
+    duration_time = estimate_duration(START_V, STOP_V, STEP_V, SOURCE_DELAY)
     total_samples = int(SAMPLE_RATE * duration_time)
-    kitty = await asyncio.to_thread(
-        _arm_kitty, START_V, STOP_V, STEP_V, COMPLIANCE_A, SOURCE_DELAY
+    # 把DURATION_TIME與TOTAL_SAMPLES都算好
+    kitty, points = await asyncio.to_thread(
+        arm_kitty_sync_task, START_V, STOP_V, STEP_V, COMPLIANCE_A, SOURCE_DELAY
     )
-    # 把該讓kitty待命的參數傳入_arm_kitty函式中
-    ai_task = await asyncio.to_thread(_arm_ai_task, SAMPLE_RATE, total_samples)
-    # 執行這行之後，同時會把SAMPLE_RATE以及total_samples傳入_arm_ai_task函式中
-    # 並且設定6211的AI1為待命狀態，並且設定好SAMPLE_RATE以及total_samples
+    ai_task = await asyncio.to_thread(arm_daq_sync_task, SAMPLE_RATE, total_samples)
 
-    # kitty 的 :READ? 身兼「啟動＋等待 SOT＋量測＋取值」，
-    # 必須先丟到背景開始等待，才能送觸發，不然會錯過那個瞬間
-    kitty_start_measure = asyncio.create_task(
-        asyncio.to_thread(read_kitty_result, kitty)
-    )
-    daq_start_measure = asyncio.create_task(
-        asyncio.to_thread(_read_ai_task, ai_task, total_samples, duration_time)
+    kitty_data_collection_task = asyncio.create_task(_collect_kitty(kitty, points))
+    pv_data_collection_task = asyncio.create_task(
+        _collect_pv(ai_task, total_samples, SAMPLE_RATE)
     )
 
-    await asyncio.sleep(0.5)  # 給兩邊一點時間真正進入待命狀態
-    await asyncio.to_thread(_send_trigger_pulse)  # 同時觸發 P0.0 與 kitty SOT
+    await asyncio.sleep(0.5)
+    await asyncio.to_thread(send_trigger_pulse)
 
-    # kitty、6211 從這裡開始各自獨立進行，誰先做完誰先存，互不等待
+    jv_filename = await kitty_data_collection_task
+    pv_filename = await pv_data_collection_task
+    await asyncio.to_thread(reset_outputs)
 
-    pv_data = await daq_start_measure
-    pv_filename = pv_and_jv_file_saving.save_pv_csv(
-        pv_data, sample_rate=SAMPLE_RATE, prefix="pv_triggered"
-    )
-    # 這裡設定的SAMPLE_RATE，是從FastAPI傳入的，然後會再回傳給pv_and_jv_file_saving.save_pv_csv函式
-    print(f"PV 資料已存至 {pv_filename}（6211 已完成，不等 kitty）")
+    # 此處重點概念，kitty_data_collection_task負責建立任務，召喚_collect_kitty函式
+    # await kitty_data_collection_task 負責執行
+    # jv_filename=await kitty_data_collection_task 會把回傳的filename存在jv_filename
+    # 才可以將jv_filename作為我們的檔名
 
-    raw, kitty_error = await kitty_start_measure
-    jv_filename, jv_points = pv_and_jv_file_saving.save_jv_csv(raw)
-    print(f"JV 資料已存至 {jv_filename}，共 {jv_points} 筆")
-    print(f"kitty 錯誤查詢: {kitty_error}")
-    await asyncio.to_thread(reset_voltage._reset_all_outputs, ["ao0", "ao1"])
-    return pv_filename, jv_filename
-    # 這裡要檔案名稱回傳，這樣RX才可以透過FastAPI抓到檔案內容
+    print(f"JV 檔案：{jv_filename}")
+    print(f"PV 檔案：{pv_filename}")
 
 
 if __name__ == "__main__":
-    asyncio.run(
-        main(
-            jv_pv_config.START_V,
-            jv_pv_config.STOP_V,
-            jv_pv_config.STEP_V,
-            jv_pv_config.COMPLIANCE_A,
-            jv_pv_config.SOURCE_DELAY,
-            jv_pv_config.SAMPLE_RATE,
-        )
-    )
-    # 執行main時，需要預設6個預設參數，否則會無法執行
+    asyncio.run(run_pv_jv_withoutFASTAPI())

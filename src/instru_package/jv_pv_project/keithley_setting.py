@@ -53,3 +53,10 @@ def configure_kitty_for_polling(
 def poll_point_count(kitty):
     """查詢 buffer 目前已經收集到幾筆，不會阻塞"""
     return int(kitty.query(":TRAC:POIN:ACT?"))
+
+
+def fetch_buffer_rows(kitty):
+    """把 buffer 目前全部的資料抓出來，依 :FORM:ELEM VOLT,CURR,TIME 的順序，每 3 個值一組"""
+    raw = kitty.query(":TRAC:DATA?")  # 要求kitty回傳
+    values = [float(x) for x in raw.strip().split(",")]
+    return [values[i : i + 3] for i in range(0, len(values), 3)]
