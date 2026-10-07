@@ -29,9 +29,11 @@ class State(rx.State):
     compliance_a: float = 0.01
     sample_rate: float = 1000.0
     source_delay: float = 0.005
-    status: str = "idle"
+    status: str = "idle"  # 預設狀態
 
-    pv_chart_data: list[dict] = []  # 先設定空list，內部元素為字典，未來存放我們的數據
+    pv_chart_data: list[dict] = []
+    jv_chart_data: list[dict] = []
+    # 先設定空list，內部元素為字典，未來存放我們的數據
 
     @rx.event(background=True)
     async def listen_status(self):
@@ -61,8 +63,15 @@ class State(rx.State):
                         self.pv_chart_data.extend(new_points)
                         # 把new_points內的資料依序加入倒pv_chart_data這個字典中
 
-                elif data["event"] == "done" and data.get("kind") == "pv":
-                    # 當本次傳送的數據資料等於done，表示本次量測完成
+                elif data["event"] == "partial_data" and data["kind"] == "jv":
+                    async with self:
+                        new_points = [
+                            {"voltage": row[0], "current": row[1]}
+                            for row in data["chunk"]
+                        ]
+                        self.jv_chart_data.extend(new_points)
+
+                elif data["event"] == "done":
                     async with self:
                         self.status = "done"
 
@@ -74,6 +83,7 @@ class State(rx.State):
         # 設定本函數為set_measurement_type，rx呼叫時，會把value傳進來
         # 當本函數收到value例如 value="pv"，就會把measurement_type改成"pv"
         # 下方index()就會知道現在該顯示甚麼
+        # 這裡的value會透過下拉選單傳回來
 
     @rx.event
     def set_start_v(self, value: str):
@@ -109,6 +119,9 @@ class State(rx.State):
         calling FastAPI's corresponding def to start the measurement.
         """
         self.status = "running"
+        self.pv_chart_data = []
+        self.jv_chart_data = []
+        # 每次重新開始量測時，先把chart_data清空，避免上次的數據還在
 
         if self.measurement_type == "jv":
             url = f"{FASTAPI_URL}/tasks/jv"
@@ -135,6 +148,34 @@ class State(rx.State):
 
         async with httpx.AsyncClient() as client:
             await client.post(url, params=params)
+
+
+def pv_chart() -> rx.Component:
+    return rx.recharts.line_chart(
+        rx.recharts.line(data_key="voltage", stroke="#8884d8"),
+        rx.recharts.x_axis(data_key="time_second", label="Time (s)"),
+        rx.recharts.y_axis(data_key="voltage", label="Voltage (V)"),
+        data=State.pv_chart_data,
+        width=600,
+        height=300,
+        margin={"left": 30, "right": 20, "top": 10, "bottom": 10},
+    )
+
+
+def jv_chart() -> rx.Component:
+    return rx.recharts.line_chart(
+        rx.recharts.line(data_key="current", stroke="#82ca9d"),
+        rx.recharts.x_axis(data_key="voltage", label="Voltage (V)"),
+        rx.recharts.y_axis(label="Current (A)"),
+        data=State.jv_chart_data,
+        width=600,
+        height=300,
+        margin={"left": 30, "right": 20, "top": 10, "bottom": 10},
+    )
+
+
+# 將兩種plot的繪圖都設定成def，當要進行繪圖的時候，直接召喚函數出來使用
+# 如果是把plot物件寫死，reflex在更新畫面，會判斷同個物件不可以再次使用
 
 
 def index() -> rx.Component:
@@ -181,39 +222,46 @@ def index() -> rx.Component:
         ),  # jv_pv_sync條件的結尾
     )  # rx.match，條件函式的結尾
     # fmt: on
-
+    chart_display = rx.match(
+        # chart是吃數據內容產生的，如果數據沒有消失，圖片就會持續保留
+        # 因此設定在status=running會先清空一次數據
+        State.measurement_type,
+        ("jv", jv_chart()),
+        ("pv", pv_chart()),
+        ("jv_pv_sync", rx.vstack(jv_chart(), pv_chart())),
+        rx.text("未知的量測方式"),
+    )
+    # 設定chart_display的條件，當選擇不同條件時，會顯示不同的圖
     return rx.container(
         # 整體網頁的基礎設定
         # return 會把index()的內容回傳給rx，rx就會知道要顯示甚麼
         rx.heading("Keithley Measurement"),
         rx.text("Select a measurement type:"),
         # ----------------------------建立下拉選單---------------------------
-        rx.vstack(  # 垂直排列的子元件內容
-            rx.select(  # 下拉選單內容
-                ["jv", "pv", "jv_pv_sync"],  # 下拉選單的內容有什麼
-                value=State.measurement_type,  # 這行顯示下拉選單目前是甚麼
-                # measurement_type 預設是jv，所以下拉選單預設是jv
-                on_change=State.set_measurement_type,
-                # 當Vars被改變，將Vars傳送給指定Event handlers，此處會傳給set_measurement_type
+        rx.hstack(
+            rx.vstack(  # 垂直排列的子元件內容
+                (
+                    rx.select(  # 下拉選單內容
+                        ["jv", "pv", "jv_pv_sync"],  # 下拉選單的內容有什麼
+                        value=State.measurement_type,  # 這行顯示下拉選單目前是甚麼
+                        # measurement_type 預設是jv，所以下拉選單預設是jv
+                        on_change=State.set_measurement_type,
+                        # 當Vars被改變，將Vars傳送給指定Event handlers，此處會傳給set_measurement_type
+                    ),
+                    measurement_selection,
+                    rx.button("開始量測", on_click=State.start_measurement),
+                    # on_click 表示當按鈕被點擊時，會呼叫State.start_measurement函數
+                ),
             ),
-            measurement_selection,
-            rx.button("開始量測", on_click=State.start_measurement),
-            # on_click 表示當按鈕被點擊時，會呼叫State.start_measurement函數
-            rx.recharts.line_chart(
-                rx.recharts.line(data_key="voltage", stroke="#8884d8"),
-                rx.recharts.x_axis(data_key="time_second", label="Time (s)"),
-                # x軸的資料來源是"index"
-                rx.recharts.y_axis(data_key="voltage", label="Voltage (V)"),
-                # y軸的資料來源是"voltage"
-                data=State.pv_chart_data,
-                width="100%",
-                height=300,
-            ),  # line_chart的結尾
-        ),  # 整體網頁的vstack的結尾
+            chart_display,
+            align="start",
+            spacing="8",
+            width="100%",
+        ),  # hstack的結尾
         on_mount=State.listen_status,
-        # 這邊有個關鍵：on_mount是關鍵字引數，需要放在位置引數後放。上方的內容都是位置引數
-        # on_mount 是設定這個container的屬性，當發生改變時，會呼叫State.listen_status函數
     )  # Container的結尾
+    # 這邊有個關鍵：on_mount是關鍵字引數，需要放在位置引數後放。上方的內容都是位置引數
+    # on_mount 是設定這個container的屬性，當發生改變時，會呼叫State.listen_status函數
 
 
 app = rx.App()
