@@ -1,10 +1,11 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from scripts import pico_control, led_control, daq_pv, kitty_jv, jv_with_pv
 from instru_package.jv_pv_project import pv_and_jv_file_saving, jv_pv_config
-import asyncio, csv
+import asyncio, csv, time
 
 app = FastAPI()
 # app 是一個 FastAPI 的實例物件
+# uvicorn api.main:app --reload --app-dir src
 
 
 # ---------------------------建立與rx的連接---------------------------
@@ -15,12 +16,18 @@ class ConnectionManager:
 
     async def connect(self, websocket: WebSocket):
         # 說明websocket是WebSocket型別，就像0.005是float
+        for old_ws in self.active:
+            await old_ws.close()
+        self.active.clear()
+
         await websocket.accept()
         self.active.append(websocket)
         # 新的連線接入FastAPI，Accept後把他append到list中，這樣rx就知道有新的連線了
+        print(f"[ConnectionManager] 新連線接入，目前 active 數量: {len(self.active)}")
 
     def disconnect(self, websocket: WebSocket):
-        self.active.remove(websocket)
+        if websocket in self.active:
+            self.active.remove(websocket)
         # 有連線斷開，從list刪掉
 
     async def broadcast(self, message: dict):
@@ -149,16 +156,21 @@ async def start_jv_task(
             while len(all_rows) < points:
                 await asyncio.sleep(POLL_INTERVAL_SECONDS)
                 # 在每次輪巡的間隔時間
+                t0 = time.time()
                 new_rows = await asyncio.to_thread(
                     kitty_jv.poll_kitty_rows,
                     kitty,
-                    len(all_rows),
-                    # 這裡kitty、len(all_rows)分別對應keithley_setting.poll_kitty_rows(kitty, already_sent)
+                    len(
+                        all_rows
+                    ),  # 這裡kitty、len(all_rows)分別對應keithley_setting.poll_kitty_rows(kitty, already_sent)
+                )
+                print(
+                    f"[{time.time():.2f}] 查詢耗時 {time.time() - t0:.2f}s，拿到 {len(new_rows)} 筆"
                 )
                 if new_rows:  # 有東西的話就會回傳true，沒有東西就會回傳false
                     all_rows.extend(new_rows)  # 把new_low新增到all_rows裡面
                     await manager.broadcast(
-                        {"event": "partial_data", "kind": "jv", "chunk": new_rows}
+                        {"event": "processing", "kind": "jv", "chunk": new_rows}
                     )
 
             error = await asyncio.to_thread(kitty_jv.finish_kitty_sweep, kitty)
@@ -204,16 +216,28 @@ async def start_pv_task(
                     )  # 設定ai_task，把this_chunk傳進去，讓read知道要吃多少資料
                     all_data.extend(chunk)
                     await manager.broadcast(
-                        {"event": "partial_data", "kind": "pv", "chunk": chunk}
-                    )  # 設定整個資料形式：本次傳到電腦的數據、量測中的部分數據、量測種類、數據內容(chunk內的數據)
+                        {"event": "processing", "kind": "pv", "chunk": chunk}
+                    )
+                    # 設定整個資料形式：
+                    # 當前資料狀態：處理中
+                    # 量測種類：pv
+                    # 數據內容：(chunk內的數據)
+                    print(
+                        f"[FastAPI {time.time():.2f}] 送出 processing，{len(chunk)} 筆"
+                    )
             finally:
                 ai_task.close()
 
-            filename = pv_and_jv_file_saving.save_pv_csv(all_data)
+            filename = pv_and_jv_file_saving.save_pv_csv(all_data, SAMPLE_RATE)
+            # 上次在這裡發生嚴重錯誤，因為沒有把SAMPLE_RATE傳入，導致PV檔案內的時間欄位會以預設的1000Hz為主
             print(f"PV 資料已存至 {filename}，共 {len(all_data)} 筆")
             await manager.broadcast(
                 {"event": "done", "kind": "pv", "filename": filename}
             )
+            # 設定整個資料形式：
+            # 當前資料狀態：完成
+            # 量測種類：pv
+            # 檔案名稱
 
     asyncio.create_task(_run())
     return {"status": "started"}
@@ -250,7 +274,7 @@ async def start_jv_pv_sync_task(
             if new_rows:
                 all_rows.extend(new_rows)
                 await manager.broadcast(
-                    {"event": "partial_data", "kind": "jv", "chunk": new_rows}
+                    {"event": "processing", "kind": "jv", "chunk": new_rows}
                 )
         error = await asyncio.to_thread(jv_with_pv.finish_kitty_sync, kitty)
         filename, count = pv_and_jv_file_saving.save_jv_csv_from_rows(all_rows)
@@ -272,7 +296,7 @@ async def start_jv_pv_sync_task(
                 )
                 all_data.extend(chunk)
                 await manager.broadcast(
-                    {"event": "partial_data", "kind": "pv", "chunk": chunk}
+                    {"event": "processing", "kind": "pv", "chunk": chunk}
                 )
         finally:
             ai_task.close()

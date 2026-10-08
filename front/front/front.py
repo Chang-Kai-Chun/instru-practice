@@ -1,13 +1,16 @@
 import reflex as rx
-import httpx, websockets, json
+import httpx, websockets, json, uuid, time
 
 FASTAPI_URL = "http://localhost:8000"
+# setting FastAPI_URL
 WS_URL = "ws://localhost:8000/ws/status"
+# setting websocket URL, like a bridge between FastAPI and RX
 
 
 def labeled_input(label: str, value, on_change) -> rx.Component:
     """
-    建立一個有標籤的輸入框函式，未來不需要每個都打得很長
+    Function: decribe the label
+    建立def 未來不用每個label都打很長
     """
     return rx.vstack(
         rx.text(label, size="1", color="gray"),
@@ -19,8 +22,10 @@ def labeled_input(label: str, value, on_change) -> rx.Component:
     )
 
 
-class State(rx.State):
+class State(rx.State):  # every connetion own their state, it is independent
     # 先定義出一個類別為：state
+    # 未來連線進來，都會建立一個獨自的state
+
     measurement_type: str = "jv"
     # 內容有一個measurement_type，類型是str，就是我們接下來要選的，先預設顯示為jv
     start_v: float = -0.5
@@ -35,45 +40,93 @@ class State(rx.State):
     jv_chart_data: list[dict] = []
     # 先設定空list，內部元素為字典，未來存放我們的數據
 
-    @rx.event(background=True)
+    _is_listening: bool = False
+    # 設定監聽狀態目前為否，表示目前沒有監聽迴圈在執行
+
+    @rx.event(background=True)  # 背景事件，讓此事件可以持續在背景運作
     async def listen_status(self):
+        """
+        持續監聽 FastAPI 的 /ws/status，即時把收到的量測資料更新進圖表。
+        """
+
+        # -----輔助監控工具-----
+        listener_id = uuid.uuid4().hex[:8]  # 生成8碼隨機碼
+        print(f"[listen_status] 啟動，id={listener_id}")
+        # 新裝置連線進來，觸發listener，就會print告訴我們新連線
+
+        async with self:
+            if self._is_listening:
+                return
+            # 若已經有一個監聽迴圈在跑了，直接return空白
+            self._is_listening = True
+            # 如果沒有監聽迴圈在跑，打開
+
+        local_pv_buffer = []  # 設定緩衝區為空白
+        pv_total_received = 0  # 設定pv目前接收到的資料
+        last_pv_flush = time.time()  # 紀錄現在時間
+        FLUSH_INTERVAL = 0.1  # 畫面最多每 0.1 秒更新一次，不管資料送進來多勤
+
         async with websockets.connect(WS_URL) as ws:
-            # 使用websocket連線到FastAPI，網址如WS_URL
+            # 使用websocket連線到FastAPI，網址為WS_URL
             async for message in ws:
                 # 設定迴圈，當收到訊息，就把message放入data(json格式)
                 # message 作為迴圈變數，就像是 for i in list...
                 data = json.loads(message)
+                # print(
+                #     f"[Reflex {time.time():.2f}] 收到訊息: {data['event']}, kind={data.get('kind')}"
+                # )
+                # 讓迴圈內的print一直跑，可以讓rx terminal顯示是否有成功收到訊息，且其接收到的時間戳記、資料內容、測量種類
 
-                if data["event"] == "partial_data" and data["kind"] == "pv":
+                # -----設定當量測條件等於pv，執行：-----
+                if data["event"] == "processing" and data["kind"] == "pv":
                     # 當本次傳送的數據資料等於量測的部分數據
                     # 同時滿足量測種類是pv，才會進入這個條件
-                    async with self:
-                        start_index = len(self.pv_chart_data)
-                        # 先讀取pv_chart_data內的數據量，第一次是0
-                        # 如果第一次寫入50筆，下一次len(...)就會=50
-                        new_points = [
-                            {
-                                "time_second": (start_index + i) / self.sample_rate,
-                                "voltage": v,
-                            }
-                            for i, v in enumerate(data["chunk"])
-                            # 設定index=start_index+i，這樣就會依序增加，/self.sample_rate，就是把點數變成秒數
-                            # v 就是data["chunk"]內的數據，這裡是電壓值
-                        ]
-                        self.pv_chart_data.extend(new_points)
-                        # 把new_points內的資料依序加入倒pv_chart_data這個字典中
+                    new_points = [
+                        {
+                            "time_second": (pv_total_received + i) / self.sample_rate,
+                            "voltage": v,  # new_points 接收的資料會有:時間 (s)以及 電壓 (V)
+                        }
+                        for i, v in enumerate(data["chunk"])
+                        # 設定index=start_index+i，這樣就會依序增加，/self.sample_rate，就是把點數變成秒數，v 就是data["chunk"]內的數據，這裡是電壓值
+                    ]  # new_points 是一個list，拿來裝收到的數據，每次收到的會是一個chunk，直接把new_points這個list取代成下一個chunk的資料
+                    pv_total_received += len(new_points)
+                    # pv_total_received 一開始設定為零，使用+=可以累加，i+=1 就是 i = i + 1 的意思
+                    local_pv_buffer.extend(new_points)  # 把新資料存進去緩衝區裡面
 
-                elif data["event"] == "partial_data" and data["kind"] == "jv":
+                    now = time.time()
+                    if now - last_pv_flush >= FLUSH_INTERVAL:
+                        # 當現在時間與上次刷新時間已經相差 FLUSH_INTERVAL秒，就執行：
+                        async with self:
+                            self.pv_chart_data.extend(
+                                local_pv_buffer
+                            )  # 把緩衝區的資料存進去pv_chaart_data
+                        local_pv_buffer = []
+                        # 把緩衝區設為0，才不會重複寫入
+                        last_pv_flush = now
+                        # 把這次的刷新時間記錄下來，下一次刷新才可以比較
+
+                # -----設定當量測條件等於jv，執行：-----
+                elif data["event"] == "processing" and data["kind"] == "jv":
                     async with self:
                         new_points = [
                             {"voltage": row[0], "current": row[1]}
+                            # 在keithley輸出的csv檔案中row1是電壓，row2是電流，row3是時間戳記
+                            # row[0]就是row1、row[1]就是row2，因為python計數是從0開始
                             for row in data["chunk"]
                         ]
                         self.jv_chart_data.extend(new_points)
 
                 elif data["event"] == "done":
                     async with self:
-                        self.status = "done"
+                        if (
+                            local_pv_buffer
+                        ):  # 有數值就是true，就會把數據加入到pv_chart_data的後方做延伸
+                            self.pv_chart_data.extend(local_pv_buffer)
+                        self.status = "done"  # 無論如何都會執行：把status改為done
+                    local_pv_buffer = []
+                    pv_total_received = 0
+                    last_pv_flush = time.time()
+                    # 每次量測結束，重設這些計數器，準備好迎接下一次全新的量測
 
     @rx.event
     # 裝飾器，在rx，這個是用來讓此函數可以被rx呼叫的裝飾器
@@ -134,7 +187,9 @@ class State(rx.State):
             }
         elif self.measurement_type == "pv":
             url = f"{FASTAPI_URL}/tasks/pv"
-            params = {"SAMPLE_RATE": self.sample_rate}
+            params = {
+                "SAMPLE_RATE": self.sample_rate,
+            }
         else:
             url = f"{FASTAPI_URL}/tasks/jv_pv_sync"
             params = {
@@ -147,13 +202,29 @@ class State(rx.State):
             }
 
         async with httpx.AsyncClient() as client:
+            # 用task，用完就關閉對話
             await client.post(url, params=params)
+            # 把內容傳送給fastapi，理應來說會很迅速地收到結果
+            # 語法上(url: 要傳送到哪，params = 我們要送給fastapi的內容)params 在上方我們設定了很多START_V...
 
 
 def pv_chart() -> rx.Component:
+    """
+    設定pv_chart()函數，作為rx物件
+    """
     return rx.recharts.line_chart(
-        rx.recharts.line(data_key="voltage", stroke="#8884d8"),
-        rx.recharts.x_axis(data_key="time_second", label="Time (s)"),
+        rx.recharts.line(
+            data_key="voltage",
+            stroke="#8884d8",
+            is_animation_active=False,  # 很重要
+            # 如果這個打開，資料會持續從一開始推送出來，讓視覺上看起來很詭異
+        ),
+        rx.recharts.x_axis(
+            data_key="time_second",
+            label="Time (s)",
+            type_="number",  # 明確指定為數值型軸，domain 才會生效
+            domain=[0, 10],
+        ),
         rx.recharts.y_axis(data_key="voltage", label="Voltage (V)"),
         data=State.pv_chart_data,
         width=600,
@@ -240,18 +311,16 @@ def index() -> rx.Component:
         # ----------------------------建立下拉選單---------------------------
         rx.hstack(
             rx.vstack(  # 垂直排列的子元件內容
-                (
-                    rx.select(  # 下拉選單內容
-                        ["jv", "pv", "jv_pv_sync"],  # 下拉選單的內容有什麼
-                        value=State.measurement_type,  # 這行顯示下拉選單目前是甚麼
-                        # measurement_type 預設是jv，所以下拉選單預設是jv
-                        on_change=State.set_measurement_type,
-                        # 當Vars被改變，將Vars傳送給指定Event handlers，此處會傳給set_measurement_type
-                    ),
-                    measurement_selection,
-                    rx.button("開始量測", on_click=State.start_measurement),
-                    # on_click 表示當按鈕被點擊時，會呼叫State.start_measurement函數
+                rx.select(  # 下拉選單內容
+                    ["jv", "pv", "jv_pv_sync"],  # 下拉選單的內容有什麼
+                    value=State.measurement_type,  # 這行顯示下拉選單目前是甚麼
+                    # measurement_type 預設是jv，所以下拉選單預設是jv
+                    on_change=State.set_measurement_type,
+                    # 當Vars被改變，將Vars傳送給指定Event handlers，此處會傳給set_measurement_type
                 ),
+                measurement_selection,
+                rx.button("開始量測", on_click=State.start_measurement),
+                # on_click 表示當按鈕被點擊時，會呼叫State.start_measurement函數
             ),
             chart_display,
             align="start",

@@ -54,7 +54,7 @@ def send_trigger_pulse():
 
 
 def arm_kitty_sync_task(start_v, stop_v, step_v, compliance_a, source_delay):
-    """設定 kitty 為等待 SOT 觸發的狀態（還沒真的進入等待，見 _wait_kitty_result）"""
+    """設定 kitty 為等待 SOT 觸發的狀態（還沒真的進入等待，見 _collect_kitty）"""
     rm = pyvisa.ResourceManager()
     kitty = rm.open_resource(jv_pv_config.KITTY_RESOURCE)
     kitty.timeout = jv_pv_config.KITTY_TIMEOUT_MS

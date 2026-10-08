@@ -3,8 +3,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 import cmcrameri.cm as cmc
 
-JV_FILE = "jv_sweep_8.csv"
-PV_FILE = "pv_triggered_3.csv"
+JV_FILE = "pv_11.csv"
+PV_FILE = "pv_14.csv"
 
 df = pd.read_csv(PV_FILE)  # 先建立dataframe，萬物之根源
 
@@ -20,8 +20,8 @@ ax.plot(
 ax.set_title("Photovoltage vs Time", fontsize=14)
 ax.set_xlabel("Time (s)")
 ax.set_ylabel("Voltage (V)")
-ax.set_xlim(-1, 31)  # x 軸範圍
-ax.set_ylim(0.05, 0.5)  # y 軸範圍
+ax.set_xlim(-1, 10)  # x 軸範圍
+ax.set_ylim(0.05, 0.4)  # y 軸範圍
 ax.set_xscale("linear")  # 對數座標（也可 "linear"）
 ax.set_yscale("linear")  # 暗電流常用 y 軸取對數
 ax.grid(True, linestyle="--", alpha=0.4)

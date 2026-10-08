@@ -11,7 +11,7 @@ from instru_package.jv_pv_project import jv_pv_config
 dev_name = jv_pv_config.device_name
 AI_CHANNEL = jv_pv_config.AI_CHANNEL  # Analog Input，負責收detect PV訊號的通道
 
-CHUNK_SECONDS = 0.5  # 間隔多久傳送一次數據給電腦
+CHUNK_SECONDS = 0.1  # 間隔多久傳送一次數據給電腦
 
 # def record_pv_standalone(
 #     SAMPLE_RATE=jv_pv_config.SAMPLE_RATE, duration_seconds=jv_pv_config.DURATION_SECONDS
@@ -69,7 +69,8 @@ def read_pv_chunk(ai_task, chunk_samples):
     """
     return ai_task.read(number_of_samples_per_channel=chunk_samples)
     # number_of_samples_per_channel 是nidaqmx.Task.read()的參數，表明各通道要讀取的數據量
-    # chunk_samples 是main呼叫函數後傳入的參數，表明我們要一次抓多少數據，可見main函式中的計算。
+    # chunk_samples 是被main呼叫，從main傳入的值，表明我們要一次抓多少數據，可見main函式中的計算。
+    # 如果是被jv_with_pv.py呼叫，從jv_with_pv.py中計算後傳進來的值，表明我們要一次抓多少數據。
 
 
 if __name__ == "__main__":
