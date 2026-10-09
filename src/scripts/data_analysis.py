@@ -4,8 +4,8 @@ import matplotlib.pyplot as plt
 import cmcrameri.cm as cmc
 
 
-JV_FILE = "pv_triggered_4.csv"
-PV_FILE = "Keithley_JV_sweep_4.csv"
+PV_FILE = "pv_triggered_1.csv"
+JV_FILE = "Keithley_JV_sweep_1.csv"
 
 
 def jv_plot(filename: str = JV_FILE):
@@ -34,7 +34,7 @@ def jv_plot(filename: str = JV_FILE):
 
     fig.tight_layout()
     fig.savefig(f"{filename}.png", dpi=300)
-    plt.open()
+    plt.close()  # 直接存圖片，不需要開啟圖片
 
 
 def pv_plot(filename: str = PV_FILE):
@@ -62,4 +62,4 @@ def pv_plot(filename: str = PV_FILE):
 
     fig.tight_layout()
     fig.savefig(f"{filename}.png", dpi=300)
-    plt.open()
+    plt.close()  # 直接存圖片，不需要開啟圖片

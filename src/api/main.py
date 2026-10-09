@@ -1,6 +1,7 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from scripts import pico_control, led_control, daq_pv, kitty_jv, jv_with_pv
 from instru_package.jv_pv_project import pv_and_jv_file_saving, jv_pv_config
+from scripts.data_analysis import jv_plot, pv_plot
 import asyncio, csv, time
 
 app = FastAPI()
@@ -180,6 +181,7 @@ async def start_jv_task(
             await manager.broadcast(
                 {"event": "done", "kind": "jv", "filename": filename}
             )
+            await asyncio.to_thread(jv_plot, filename)
 
     asyncio.create_task(_run())
     return {"status": "started"}
@@ -238,6 +240,8 @@ async def start_pv_task(
             # 當前資料狀態：完成
             # 量測種類：pv
             # 檔案名稱
+
+            await asyncio.to_thread(pv_plot, filename)
 
     asyncio.create_task(_run())
     return {"status": "started"}
@@ -347,6 +351,9 @@ async def start_jv_pv_sync_task(
                         "jv_filename": jv_filename,
                     }
                 )
+
+                await asyncio.to_thread(jv_plot, jv_filename)
+                await asyncio.to_thread(pv_plot, pv_filename)
 
     asyncio.create_task(_run())
     return {"status": "started"}
