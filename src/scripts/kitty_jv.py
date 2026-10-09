@@ -42,7 +42,9 @@ def poll_kitty_rows(kitty, already_sent):
     current_count = keithley_setting.poll_point_count(kitty)
     # 在keithley_setting.py中，poll_point_count()會使用:TRAC:POIN:ACT? 語法持續查詢kitty的buffer有多少資料
     if current_count <= already_sent:
-        # already_sent 由FastAPI 傳入 len(all_rows)
+        # already_sent目前被fastapi與main召喚
+        # 當我們用rx或fastapi執行，already_sent 由FastAPI 傳入 len(all_rows)
+        # 如果只單純執行此檔案，則會由main傳入
         return []
     rows = keithley_setting.fetch_buffer_rows(kitty)
     return rows[already_sent:current_count]

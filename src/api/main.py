@@ -94,36 +94,6 @@ def read_root():
     # 把上述訊息轉換成json檔，並回傳，打開FastAPI就看得到了
 
 
-@app.post("/tasks/led")
-async def start_led_task():
-    if daq_lock.locked():
-        # daq_lock 是一個 asyncio.Lock()，
-        # 若有裝置正在占用本區塊，會回傳true
-        return {"status": "busy", "message": "6211 正在使用中，請稍後再試"}
-
-    async def _run():
-        # 再 async def 中再次定義一個 async def 名稱是：_run
-        # 稱為巢狀函式(Nested)
-        # 此處要使用此方法是因為我們需要執行main，同時又要把6211鎖住，執行完又要放鎖
-        # 把這工作通通丟在一個def裡面
-        async with daq_lock:
-            # 使用with，用完lock之後就會自動釋放鎖
-            await led_control.main()
-
-    # 上方的 _run() 函式建立完成
-    asyncio.create_task(_run())
-    # 使用asyncio.create_task() 把 _run() 丟到背景緒去跑
-    # 其他人可以先跑
-    return {"status": "started"}
-    # 回傳開始執行給前端
-
-
-@app.post("/tasks/pico")
-async def start_pico_task():
-    asyncio.create_task(pico_control.start_pi_pico())
-    return {"status": "started"}
-
-
 # ---------------------------
 # Below is about PV measurement and JV measurement
 # ---------------------------

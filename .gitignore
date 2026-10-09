@@ -1,2 +1,7 @@
 *csv
 *pdf
+*png
+*src/scripts/led_control.py
+*src/scripts/pico_control.py
+*src/instru_package/voltage_control.py
+*uf2
